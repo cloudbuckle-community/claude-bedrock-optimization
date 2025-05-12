@@ -1,0 +1,7 @@
+langchain
+langchain_aws
+boto3==1.38.11
+pydantic
+python-dotenv
+matplotlib
+pandas

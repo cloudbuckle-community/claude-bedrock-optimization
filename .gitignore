@@ -172,3 +172,21 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# AWS
+.aws-credentials
+.aws/
+
+# Benchmark results
+benchmark/results/*.png
+benchmark/results/*.csv
+!benchmark/results/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS specific
+.DS_Store
