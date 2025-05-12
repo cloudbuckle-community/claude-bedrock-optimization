@@ -1,135 +1,50 @@
 """
-Demonstrates the effect of prompt caching on response time.
+Comparative prompt caching test between non-sensitive content (book/literature) and sensitive (financial) content.
 """
 
 import sys
 import os
 import json
 import time
-
+import requests
+from bs4 import BeautifulSoup
 import boto3
 
 # Add the project root to the path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.client import create_optimized_client
 from utils.prompts import SAMPLE_DOCUMENT, get_document_qa_prompts
 from config import CLAUDE_3_7_SONNET
 
 
-def time_response(bedrock_client, document, query, use_caching=False):
-    """
-    Time the response for a query, with or without caching
-    """
-    if use_caching:
-        print(f"Using content structure for caching")
+def fetch_book_content(url="https://www.gutenberg.org/cache/epub/1342/pg1342.txt"):
+    """Fetch and clean book content like in your working example"""
+    response = requests.get(url)
+    soup = BeautifulSoup(response.content, 'html.parser')
 
-        # Use structured content with cache control
-        messages_body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 4096,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "I need help understanding this document:\n\n",
-                            "cache_control": {
-                                "type": "ephemeral"
-                            }
-                        },
-                        {
-                            "type": "text",
-                            "text": document,
-                            "cache_control": {
-                                "type": "ephemeral"
-                            }
-                        },
-                        {
-                            "type": "text",
-                            "text": query
-                        }
-                    ]
-                }
-            ]
-        }
-    else:
-        # Non-cached version (unchanged)
-        print(f"Not using caching")
-        messages_body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 4096,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": f"I need help understanding this document:\n\n{document}\n\n{query}"
-                }
-            ]
-        }
+    # Remove script and style elements
+    for script in soup(["script", "style"]):
+        script.decompose()
 
-    start_time = time.time()
-    bedrock = boto3.client(service_name="bedrock-runtime", region_name="us-east-1")
-    response = bedrock.invoke_model(
-        body=json.dumps(messages_body),
-        modelId=CLAUDE_3_7_SONNET,
-        accept="application/json",
-        contentType="application/json"
-    )
-    end_time = time.time()
+    # Get text
+    text = soup.get_text()
 
-    response_body = json.loads(response['body'].read())
-    response_text = response_body['content'][0]['text'] if 'content' in response_body else "No content"
-    print(json.dumps(response_body, indent=2))
+    # Clean up text
+    lines = (line.strip() for line in text.splitlines())
+    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+    text = '\n'.join(chunk for chunk in chunks if chunk)
 
-    return {
-        "time": end_time - start_time,
-        "text": response_text,
-        "usage": response_body.get('usage', {})
-    }
+    # To ensure we're not exceeding token limits, we'll truncate
+    return text[:20000]  # Truncate to avoid token limits
 
 
-def test_basic_caching(client):
-    """
-    A very basic test of caching functionality
-    """
-    print("\n=== BASIC CACHING TEST ===")
+def test_content_caching(content, content_name, client, query="What is this text about?"):
+    """Test caching for a specific content"""
+    print(f"\n=== Testing Caching for {content_name} ===")
+    print(f"Content length: {len(content)} characters")
 
-    # Simple content for caching test
-    cached_content = "This is a cached text that will be reused across requests."
-
-    # First request without caching
-    print("1. Without cache:")
-    no_cache_body = {
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 1024,
-        "messages": [
-            {
-                "role": "user",
-                "content": f"{cached_content}\n\nWhat does the text say?"
-            }
-        ]
-    }
-
-    start_time = time.time()
-    response = client.invoke_model(
-        body=json.dumps(no_cache_body),
-        modelId=CLAUDE_3_7_SONNET,
-        accept="application/json",
-        contentType="application/json"
-    )
-    end_time = time.time()
-
-    response_body = json.loads(response['body'].read())
-    result1_time = end_time - start_time
-    result1_usage = response_body.get('usage', {})
-
-    print(f"Time: {result1_time:.2f}s")
-    print(f"Usage: {result1_usage}")
-
-    # Second request with structured content for potential caching
-    print("\n2. With structured content:")
-    structured_body = {
+    # Create cached payload
+    cached_payload = {
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": 1024,
         "messages": [
@@ -138,202 +53,148 @@ def test_basic_caching(client):
                 "content": [
                     {
                         "type": "text",
-                        "text": cached_content,
+                        "text": content,
                         "cache_control": {
                             "type": "ephemeral"
                         }
                     },
                     {
                         "type": "text",
-                        "text": "Tell me about the text."
+                        "text": query
                     }
                 ]
             }
         ]
     }
 
+    # Convert to JSON once to ensure consistency
+    cached_json = json.dumps(cached_payload)
+
+    # First call to set up the cache
+    print(f"1. First {content_name} query (cache setup)...")
     start_time = time.time()
-    try:
-        response = client.invoke_model(
-            body=json.dumps(structured_body),
-            modelId=CLAUDE_3_7_SONNET,
-            accept="application/json",
-            contentType="application/json"
-        )
-        end_time = time.time()
+    response = client.invoke_model(
+        body=cached_json,
+        modelId=CLAUDE_3_7_SONNET,
+        accept="application/json",
+        contentType="application/json"
+    )
+    end_time = time.time()
 
-        response_body = json.loads(response['body'].read())
-        result2_time = end_time - start_time
-        result2_usage = response_body.get('usage', {})
+    response_body = json.loads(response['body'].read())
+    first_time = end_time - start_time
+    print(f"Response time: {first_time:.2f} seconds")
+    first_usage = response_body.get('usage', {})
+    print(f"Usage statistics: {first_usage}")
 
-        print(f"Time: {result2_time:.2f}s")
-        print(f"Usage: {result2_usage}")
+    # Wait for cache to establish
+    print(f"Waiting 10 seconds to ensure cache is established...")
+    time.sleep(10)
 
-        # Wait a moment
-        print("Waiting a moment...")
-        time.sleep(2)
+    # Second call that should use the cache
+    print(f"2. Second {content_name} query (should use cache)...")
+    start_time = time.time()
+    response = client.invoke_model(
+        body=cached_json,  # Same JSON string
+        modelId=CLAUDE_3_7_SONNET,
+        accept="application/json",
+        contentType="application/json"
+    )
+    end_time = time.time()
 
-        # Third request with same structured content
-        print("\n3. Second attempt with structured content:")
+    response_body = json.loads(response['body'].read())
+    second_time = end_time - start_time
+    second_usage = response_body.get('usage', {})
+    print(f"Response time: {second_time:.2f} seconds")
+    print(f"Usage statistics: {second_usage}")
 
-        start_time = time.time()
-        response = client.invoke_model(
-            body=json.dumps(structured_body),
-            modelId=CLAUDE_3_7_SONNET,
-            accept="application/json",
-            contentType="application/json"
-        )
-        end_time = time.time()
+    # Check for cache hit
+    cache_hit = False
+    if 'cache_read_input_tokens' in second_usage and second_usage['cache_read_input_tokens'] > 0:
+        cache_hit = True
+        print(f"✅ Cache hit detected: {second_usage['cache_read_input_tokens']} tokens read from cache")
+    else:
+        print(f"❌ No cache hit detected for {content_name}")
 
-        response_body = json.loads(response['body'].read())
-        result3_time = end_time - start_time
-        result3_usage = response_body.get('usage', {})
-
-        print(f"Time: {result3_time:.2f}s")
-        print(f"Usage: {result3_usage}")
-
-        # Check if any caching metrics are present
-        if 'cacheReadInputTokens' in result3_usage and result3_usage['cacheReadInputTokens'] > 0:
-            print("✅ Cache hit detected in basic test")
-        else:
-            print("❌ No cache hit detected in basic test")
-
-    except Exception as e:
-        print(f"Error during basic caching test: {str(e)}")
-        print("This may indicate that prompt caching is not supported in your environment.")
+    return {
+        "content_name": content_name,
+        "first_time": first_time,
+        "second_time": second_time,
+        "cache_hit": cache_hit,
+        "first_usage": first_usage,
+        "second_usage": second_usage
+    }
 
 
-def demonstrate_prompt_caching():
-    """
-    Demonstrate the effect of prompt caching on response time
-    """
-    print("Creating optimized client...")
-    bedrock_client = create_optimized_client()
+def run_comparative_test():
+    """Run a comparative test between book and financial content"""
+    print("Creating client...")
+    client = boto3.client(service_name="bedrock-runtime", region_name="us-east-1")
 
-    # Test for API version support
-    try:
-        print("Testing API compatibility...")
-        test_body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 10,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": "Hello"
-                }
-            ]
-        }
+    # Get the two types of content
+    print("Fetching book content...")
+    book_content = fetch_book_content()
+    financial_content = SAMPLE_DOCUMENT
 
-        bedrock_client.invoke_model(
-            body=json.dumps(test_body),
-            modelId=CLAUDE_3_7_SONNET,
-            accept="application/json",
-            contentType="application/json"
-        )
-        print("✅ Basic API test successful")
-    except Exception as e:
-        print(f"❌ API test failed: {str(e)}")
-        print("Please check your AWS credentials and region settings.")
-        return
+    # Test book content first
+    book_results = test_content_caching(
+        book_content,
+        "Book Content",
+        client,
+        "What is the main theme of this book?"
+    )
 
-    # Use the sample document as context
-    document = SAMPLE_DOCUMENT
+    # Test financial content second
+    financial_results = test_content_caching(
+        financial_content,
+        "Financial Content",
+        client,
+        "What are the interest rates mentioned in this text?"
+    )
 
-    # Get document Q&A prompts
-    qa_prompts = get_document_qa_prompts(document)
+    # Print summary comparison
+    print("\n=== COMPARATIVE RESULTS ===")
+    print(f"Book Content:")
+    print(f"  First call: {book_results['first_time']:.2f}s")
+    print(f"  Second call: {book_results['second_time']:.2f}s")
+    print(f"  Cache hit: {'Yes' if book_results['cache_hit'] else 'No'}")
 
-    # First query without caching
-    print("\n1. First query (without cache)...")
-    first_query = qa_prompts[0]
-    print(f"Query: {first_query}")
-    first_result = time_response(bedrock_client, document, first_query, use_caching=False)
-    print(f"Response time: {first_result['time']:.2f} seconds")
-    print(f"Response: {first_result['text'][:100]}...")
+    print(f"\nFinancial Content:")
+    print(f"  First call: {financial_results['first_time']:.2f}s")
+    print(f"  Second call: {financial_results['second_time']:.2f}s")
+    print(f"  Cache hit: {'Yes' if financial_results['cache_hit'] else 'No'}")
 
-    # Second query with caching disabled
-    print("\n2. Second query (still without cache)...")
-    second_query = qa_prompts[1]
-    print(f"Query: {second_query}")
-    second_result = time_response(bedrock_client, document, second_query, use_caching=False)
-    print(f"Response time: {second_result['time']:.2f} seconds")
-    print(f"Response: {second_result['text'][:100]}...")
+    # Analysis
+    print("\n=== ANALYSIS ===")
+    if book_results['cache_hit'] and not financial_results['cache_hit']:
+        print("CONFIRMED: Book content is cached but financial content is not.")
+        print("This suggests Claude is treating the content types differently for caching.")
+    elif financial_results['cache_hit'] and not book_results['cache_hit']:
+        print("UNEXPECTED: Financial content is cached but book content is not.")
+    elif book_results['cache_hit'] and financial_results['cache_hit']:
+        print("BOTH are cached. Content type doesn't affect caching.")
+    else:
+        print("NEITHER is cached. The caching feature might not be available in your environment.")
 
-    try:
-        # Third query with caching structure
-        print("\n3. Third query (with caching structure - attempt)...")
-        third_query = qa_prompts[2]
-        print(f"Query: {third_query}")
-        third_result = time_response(bedrock_client, document, third_query, use_caching=True)
-        print(f"Response time: {third_result['time']:.2f} seconds")
-        print(f"Response: {third_result['text'][:100]}...")
-        print(f"Usage statistics: {third_result['usage']}")
+    # Performance analysis
+    book_speedup = book_results['first_time'] - book_results['second_time']
+    financial_speedup = financial_results['first_time'] - financial_results['second_time']
 
-        # Add a delay
-        print("\nWaiting a moment...")
-        time.sleep(2)
+    print(f"\nPerformance speedup:")
+    print(f"  Book content: {book_speedup:.2f}s faster on second call")
+    print(f"  Financial content: {financial_speedup:.2f}s faster on second call")
 
-        # Fourth query with same caching structure
-        print("\n4. Fourth query (same caching structure)...")
-        fourth_query = qa_prompts[2]  # Using the same query as third for potential cache hit
-        print(f"Query: {fourth_query}")
-        fourth_result = time_response(bedrock_client, document, fourth_query, use_caching=True)
-        print(f"Response time: {fourth_result['time']:.2f} seconds")
-        print(f"Response: {fourth_result['text'][:100]}...")
-
-        # Display cache statistics
-        print("Usage statistics:")
-        cache_stats = fourth_result['usage']
-        if 'cacheReadInputTokens' in cache_stats and cache_stats['cacheReadInputTokens'] > 0:
-            print(f"✅ Cache hit detected: {cache_stats['cacheReadInputTokens']} tokens read from cache")
-        else:
-            print("❌ No cache hit detected")
-
-        # Try one more with a different query
-        print("\n5. Fifth query (different query, same caching structure)...")
-        fifth_query = qa_prompts[3] if len(qa_prompts) > 3 else "What are the fees associated with this account?"
-        print(f"Query: {fifth_query}")
-        fifth_result = time_response(bedrock_client, document, fifth_query, use_caching=True)
-        print(f"Response time: {fifth_result['time']:.2f} seconds")
-        print(f"Response: {fifth_result['text'][:100]}...")
-
-        # Display cache statistics
-        print("Usage statistics:")
-        cache_stats = fifth_result['usage']
-        if 'cacheReadInputTokens' in cache_stats and cache_stats['cacheReadInputTokens'] > 0:
-            print(f"✅ Cache hit detected: {cache_stats['cacheReadInputTokens']} tokens read from cache")
-        else:
-            print("❌ No cache hit detected")
-
-        # Summary of results
-        print("\nSummary:")
-        print(f"Without caching: {first_result['time']:.2f}s, {second_result['time']:.2f}s")
-        print(f"With caching structure: {third_result['time']:.2f}s, {fourth_result['time']:.2f}s, {fifth_result['time']:.2f}s")
-
-        # Calculate performance comparison
-        avg_no_cache = (first_result['time'] + second_result['time']) / 2
-        avg_with_caching = (third_result['time'] + fourth_result['time'] + fifth_result['time']) / 3
-
-        if avg_with_caching < avg_no_cache:
-            improvement = (1 - avg_with_caching / avg_no_cache) * 100
-            print(f"Performance improvement with structured content: {improvement:.1f}%")
-        else:
-            print("No performance improvement observed with structured content.")
-
-    except Exception as e:
-        print(f"Error during caching tests: {str(e)}")
-        print("This may indicate that prompt caching is not supported in your environment.")
-
-    # Add basic caching test for verification
-    test_basic_caching(bedrock_client)
-
-    print("\nConclusions about prompt caching:")
-    print("1. The performance impact of structured content vs. regular content can vary.")
-    print("2. If caching is not working, it may not be available in your AWS Bedrock configuration.")
-    print("3. Check the AWS Bedrock documentation for the latest information on prompt caching.")
-    print("   You may need to update the boto3 version or use a different Claude model version.")
-    print("4. Boto3 version: 1.38.11 might not fully support all Claude 3.7 Sonnet features.")
-    print("   Consider updating to the latest boto3 version if possible.")
+    print("\nRecommendations:")
+    if book_results['cache_hit'] and not financial_results['cache_hit']:
+        print("1. Use caching primarily for non-sensitive, non-financial content")
+        print("2. For financial documents, consider that caching may not be available")
+        print("3. You may want to contact AWS support to confirm if this is expected behavior")
+    elif not book_results['cache_hit'] and not financial_results['cache_hit']:
+        print("1. Check if your AWS Bedrock setup supports caching features")
+        print("2. Verify boto3 version is up to date")
+        print("3. Ensure 'cache_control' is properly formatted in your requests")
+        print("4. Consider using 'x-amzn-bedrock-trace' header to help diagnose API issues")
 
 
 if __name__ == "__main__":
-    demonstrate_prompt_caching()
+    run_comparative_test()
