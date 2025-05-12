@@ -191,7 +191,7 @@ This will generate performance comparison charts in the `benchmark/results/` dir
 
 ## Related Blog Post
 
-For a detailed explanation of these optimization techniques, check out the accompanying blog post: [Optimizing Claude 3.7 Sonnet Response Time with LangChain and AWS Bedrock](https://blog.cloudbuckle.com/80b09c71fee0)
+For a detailed explanation of these optimization techniques, check out the accompanying blog post: [Optimizing Claude 3.7 Sonnet Response Time with LangChain and AWS Bedrock](https://blog.cloudbuckle.com/optimizing-claude-3-7-sonnet-response-time-with-langchain-and-aws-bedrock-80b09c71fee0)
 
 ## Key Lessons Learned
 
